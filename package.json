@@ -1,0 +1,32 @@
+{
+  "name": "observability-platform",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "services/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:gateway\" \"npm run dev:product\" \"npm run dev:order\" \"npm run dev:payment\" \"npm run dev:notification\" \"npm run dev:print\" --names \"GATEWAY,PRODUCT,ORDER,PAYMENT,NOTIFY,PRINT\" --prefix-colors \"blue,green,yellow,magenta,cyan,white\"",
+    "dev:gateway": "npm run dev --workspace=@observability/api-gateway",
+    "dev:product": "npm run dev --workspace=@observability/product-service",
+    "dev:order": "npm run dev --workspace=@observability/order-service",
+    "dev:payment": "npm run dev --workspace=@observability/payment-service",
+    "dev:notification": "npm run dev --workspace=@observability/notification-service",
+    "dev:print": "npm run dev --workspace=@observability/print-service",
+    "build": "npm run build --workspaces",
+    "clean": "npm run clean --workspaces && rimraf node_modules"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.24",
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.1.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "pg": "^8.16.3",
+    "reflect-metadata": "^0.2.2",
+    "typeorm": "^0.3.27"
+  }
+}

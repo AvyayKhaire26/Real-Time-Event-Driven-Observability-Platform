@@ -22,7 +22,7 @@ const dbOptions: DataSourceOptions = {
   port: parseInt(process.env.DB_PORT || "5432"),
   username: process.env.DB_USER || "postgres",
   password: process.env.DB_PASSWORD || "postgres",
-  database: process.env.DB_NAME || "observability_products",
+  database: process.env.DB_NAME || "observability_db",
   entities: [Product],
   synchronize: true, // Auto-create tables in dev
   logging: false

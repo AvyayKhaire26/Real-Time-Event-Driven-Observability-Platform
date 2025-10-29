@@ -11,6 +11,7 @@
     "dependencies": {
         "@observability/common": "^1.0.0",
         "@observability/core": "^1.0.0",
+        "axios": "^1.13.1",
         "dotenv": "^16.3.1",
         "express": "^4.18.2",
         "inversify": "^6.0.2",

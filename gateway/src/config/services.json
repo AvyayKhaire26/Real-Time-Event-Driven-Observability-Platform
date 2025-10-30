@@ -1,0 +1,67 @@
+{
+  "services": [
+    {
+      "name": "product-service",
+      "url": "http://localhost:3001",
+      "prefix": "/products",
+      "healthCheck": "/health",
+      "timeout": 5000,
+      "retries": 3,
+      "circuitBreaker": {
+        "enabled": true,
+        "threshold": 5,
+        "timeout": 30000
+      }
+    },
+    {
+      "name": "order-service",
+      "url": "http://localhost:3002",
+      "prefix": "/orders",
+      "healthCheck": "/health",
+      "timeout": 5000,
+      "retries": 3,
+      "circuitBreaker": {
+        "enabled": true,
+        "threshold": 5,
+        "timeout": 30000
+      }
+    },
+    {
+      "name": "payment-service",
+      "url": "http://localhost:3003",
+      "prefix": "/payments",
+      "healthCheck": "/health",
+      "timeout": 10000,
+      "retries": 2,
+      "circuitBreaker": {
+        "enabled": true,
+        "threshold": 3,
+        "timeout": 20000
+      }
+    },
+    {
+      "name": "notification-service",
+      "url": "http://localhost:3004",
+      "prefix": "/notifications",
+      "healthCheck": "/health",
+      "timeout": 5000,
+      "retries": 3,
+      "circuitBreaker": {
+        "enabled": false
+      }
+    },
+    {
+      "name": "print-service",
+      "url": "http://localhost:3005",
+      "prefix": "/invoices",
+      "healthCheck": "/health",
+      "timeout": 8000,
+      "retries": 2,
+      "circuitBreaker": {
+        "enabled": true,
+        "threshold": 5,
+        "timeout": 30000
+      }
+    }
+  ]
+}

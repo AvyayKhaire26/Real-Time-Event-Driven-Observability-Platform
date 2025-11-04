@@ -9,7 +9,6 @@ import { getEventPublisher } from "../middleware/eventPublisher";
 export function createServiceProxy(service: ServiceConfig): Router {
   const router = Router();
 
-  // Get or create circuit breaker for this service
   let circuitBreaker;
   if (service.circuitBreaker.enabled) {
     circuitBreaker = circuitBreakerRegistry.getOrCreate(service.name, {
@@ -31,20 +30,17 @@ export function createServiceProxy(service: ServiceConfig): Router {
       return newPath;
     },
     timeout: service.timeout,
-    selfHandleResponse: true, // We handle response to capture body
+    selfHandleResponse: true,
 
     onProxyReq: (proxyReq, req: any) => {
-      // Store request start time and service name
       req.proxyStartTime = Date.now();
-      req.targetService = service.name; // ✅ Store service name
+      req.targetService = service.name;
 
-      // Add trace ID to forwarded request
       if (req.traceId) {
         proxyReq.setHeader("X-Trace-Id", req.traceId);
         proxyReq.setHeader("X-Gateway", "observability-gateway");
       }
 
-      // Forward request body for POST/PUT/PATCH
       if (req.body && Object.keys(req.body).length > 0) {
         const bodyData = JSON.stringify(req.body);
         proxyReq.setHeader("Content-Type", "application/json");
@@ -56,9 +52,8 @@ export function createServiceProxy(service: ServiceConfig): Router {
     onProxyRes: (proxyRes, req: any, res) => {
       const duration = Date.now() - (req.proxyStartTime || Date.now());
       const statusCode = proxyRes.statusCode || 500;
-      const serviceName = req.targetService || service.name; // ✅ Use stored service name
+      const serviceName = req.targetService || service.name;
 
-      // Capture response body
       let responseBody = "";
       proxyRes.on("data", (chunk) => {
         responseBody += chunk.toString("utf8");
@@ -74,16 +69,14 @@ export function createServiceProxy(service: ServiceConfig): Router {
           duration: `${duration}ms`
         });
 
-        // PUBLISH EVENTS
         const publisher = getEventPublisher();
 
         if (publisher && publisher.isReady()) {
-          // Parse response body (if JSON)
           let parsedResponse;
           try {
             parsedResponse = JSON.parse(responseBody);
           } catch (e) {
-            parsedResponse = null; // Not JSON or empty
+            parsedResponse = null;
           }
 
           // 1. Request/Response Event
@@ -91,7 +84,7 @@ export function createServiceProxy(service: ServiceConfig): Router {
             eventType: "request.completed",
             timestamp: new Date().toISOString(),
             traceId: req.traceId,
-            service: serviceName, // ✅ Correct service name
+            service: serviceName,
             method: req.method,
             path: req.path,
             statusCode,
@@ -105,11 +98,14 @@ export function createServiceProxy(service: ServiceConfig): Router {
 
           publisher.publishEvent("logs.request", requestEvent);
 
-          // 2. Service Metrics Event
+          // 2. Service Metrics Event ✅ NOW WITH TRACEID
           const metricsEvent = {
             eventType: "metric.service",
             timestamp: new Date().toISOString(),
-            service: serviceName, // ✅ Correct service name
+            traceId: req.traceId,  // ✅ Added traceId
+            service: serviceName,
+            method: req.method,     // ✅ Added method
+            path: req.path,         // ✅ Added path
             metrics: {
               response_time_ms: duration,
               status_code: statusCode,
@@ -123,16 +119,42 @@ export function createServiceProxy(service: ServiceConfig): Router {
 
           // 3. Error Event (if status >= 400)
           if (statusCode >= 400) {
+            // ✅ Enhanced error message extraction
+            let errorMessage = "Unknown error";
+            let errorDetails = null;
+
+            if (parsedResponse) {
+              // Try multiple common error fields
+              errorMessage = 
+                parsedResponse.message || 
+                parsedResponse.error || 
+                parsedResponse.msg || 
+                `HTTP ${statusCode}`;
+              errorDetails = parsedResponse;
+            } else if (responseBody) {
+              // Non-JSON response - use body as error message
+              errorMessage = responseBody.substring(0, 255); // Limit length
+              errorDetails = { rawBody: responseBody };
+            } else {
+              // Empty body
+              errorMessage = `HTTP ${statusCode} ${req.method} ${req.path}`;
+              errorDetails = {
+                statusCode,
+                method: req.method,
+                path: req.path
+              };
+            }
+
             const errorEvent = {
               eventType: "error.occurred",
               timestamp: new Date().toISOString(),
               traceId: req.traceId,
-              service: serviceName, // ✅ Correct service name
+              service: serviceName,
               endpoint: req.path,
               method: req.method,
               statusCode,
-              errorMessage: parsedResponse?.message || parsedResponse?.error || `HTTP ${statusCode}`,
-              errorDetails: parsedResponse,
+              errorMessage,
+              errorDetails,
               requestBody: req.body
             };
 
@@ -147,7 +169,6 @@ export function createServiceProxy(service: ServiceConfig): Router {
           });
         }
 
-        // Forward response to client
         res.statusCode = statusCode;
         Object.keys(proxyRes.headers).forEach((key) => {
           res.setHeader(key, proxyRes.headers[key]!);
@@ -168,7 +189,6 @@ export function createServiceProxy(service: ServiceConfig): Router {
         duration: `${duration}ms`
       });
 
-      // Publish error event
       const publisher = getEventPublisher();
       if (publisher && publisher.isReady()) {
         const errorEvent = {
@@ -181,6 +201,11 @@ export function createServiceProxy(service: ServiceConfig): Router {
           statusCode: 503,
           errorMessage: err.message,
           errorType: "ProxyError",
+          errorDetails: {
+            errorType: "ProxyError",
+            message: err.message,
+            stack: err.stack
+          },
           requestBody: req.body
         };
 
@@ -198,7 +223,6 @@ export function createServiceProxy(service: ServiceConfig): Router {
     }
   };
 
-  // Circuit breaker middleware
   if (circuitBreaker) {
     router.use((req: any, res, next) => {
       if (circuitBreaker!.isOpen()) {
@@ -219,7 +243,6 @@ export function createServiceProxy(service: ServiceConfig): Router {
     });
   }
 
-  // Apply proxy middleware
   router.use(createProxyMiddleware(proxyOptions));
 
   return router;

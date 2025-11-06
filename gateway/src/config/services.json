@@ -5,7 +5,7 @@
       "url": "http://localhost:3001",
       "prefix": "/products",
       "healthCheck": "/health",
-      "timeout": 5000,
+      "timeout": 60000,
       "retries": 3,
       "circuitBreaker": {
         "enabled": true,
@@ -31,7 +31,7 @@
       "url": "http://localhost:3003",
       "prefix": "/payments",
       "healthCheck": "/health",
-      "timeout": 10000,
+      "timeout": 60000,
       "retries": 2,
       "circuitBreaker": {
         "enabled": true,
@@ -44,7 +44,7 @@
       "url": "http://localhost:3004",
       "prefix": "/notifications",
       "healthCheck": "/health",
-      "timeout": 5000,
+      "timeout": 60000,
       "retries": 3,
       "circuitBreaker": {
         "enabled": false
@@ -55,7 +55,7 @@
       "url": "http://localhost:3005",
       "prefix": "/invoices",
       "healthCheck": "/health",
-      "timeout": 8000,
+      "timeout": 60000,
       "retries": 2,
       "circuitBreaker": {
         "enabled": true,

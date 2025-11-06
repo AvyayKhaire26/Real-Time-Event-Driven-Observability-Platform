@@ -1,2 +1,6 @@
 node_modules
 dist
+venv
+.pyc
+__pycache__
+ml-service/models

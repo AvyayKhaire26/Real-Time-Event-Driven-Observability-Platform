@@ -2,16 +2,16 @@ import { injectable, inject } from "inversify";
 import { INotificationRepository } from "../repositories/NotificationRepository";
 import { Notification } from "../entities/Notification.entity";
 import { ILogger, TYPES } from "@observability/core";
-import { 
-  SendNotificationDto, 
-  NotificationStatus 
+import {
+  SendNotificationDto,
+  NotificationStatus
 } from "../utils/notification.utils";
 
 export interface INotificationService {
-  sendNotification(notificationDto: SendNotificationDto): Promise<Notification>;
-  getNotificationById(id: string): Promise<Notification | null>;
-  getNotificationsByRecipient(recipient: string): Promise<Notification[]>;
-  getAllNotifications(): Promise<Notification[]>;
+  sendNotification(notificationDto: SendNotificationDto, traceId?: string): Promise<Notification>;
+  getNotificationById(id: string, traceId?: string): Promise<Notification | null>;
+  getNotificationsByRecipient(recipient: string, traceId?: string): Promise<Notification[]>;
+  getAllNotifications(traceId?: string): Promise<Notification[]>;
 }
 
 @injectable()
@@ -21,7 +21,7 @@ export class NotificationService implements INotificationService {
     @inject(TYPES.Logger) private logger: ILogger
   ) {}
 
-  async sendNotification(notificationDto: SendNotificationDto): Promise<Notification> {
+  async sendNotification(notificationDto: SendNotificationDto, traceId?: string): Promise<Notification> {
     try {
       // Create notification record
       const notification = await this.notificationRepo.create({
@@ -32,50 +32,44 @@ export class NotificationService implements INotificationService {
         metadata: notificationDto.metadata,
         status: NotificationStatus.PENDING
       });
-
-      // Simulate sending (just log it)
-      await this.simulateSending(notification);
-
+      // Simulate sending
+      await this.simulateSending(notification, traceId);
       // Update status to SENT
       const updatedNotification = await this.notificationRepo.updateStatus(
         notification.id,
         NotificationStatus.SENT,
         new Date()
       );
-
-      this.logger.info(`Notification sent: ${notification.id}`, {
-        type: notification.type,
-        recipient: notification.recipient
-      });
-
+      this.logger.info("Notification sent", { traceId, notificationId: notification.id, type: notification.type, recipient: notification.recipient });
       return updatedNotification!;
     } catch (error) {
-      this.logger.error("Failed to send notification", error as Error);
+      this.logger.error("Failed to send notification", error as Error, { traceId, error: (error as Error).message, stack: (error as Error).stack });
       throw error;
     }
   }
 
-  async getNotificationById(id: string): Promise<Notification | null> {
+  async getNotificationById(id: string, traceId?: string): Promise<Notification | null> {
+    this.logger.info("Get notification by id", { traceId, id });
     return await this.notificationRepo.findById(id);
   }
 
-  async getNotificationsByRecipient(recipient: string): Promise<Notification[]> {
+  async getNotificationsByRecipient(recipient: string, traceId?: string): Promise<Notification[]> {
+    this.logger.info("Get notifications by recipient", { traceId, recipient });
     return await this.notificationRepo.findByRecipient(recipient);
   }
 
-  async getAllNotifications(): Promise<Notification[]> {
+  async getAllNotifications(traceId?: string): Promise<Notification[]> {
+    this.logger.info("Get all notifications", { traceId });
     return await this.notificationRepo.findAll();
   }
 
-  private async simulateSending(notification: Notification): Promise<void> {
-    // Simulate network delay
+  private async simulateSending(notification: Notification, traceId?: string): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Log the notification (in real app, this would call email/SMS API)
-    this.logger.info(`📧 [${notification.type}] Sending to: ${notification.recipient}`);
+    this.logger.info("Simulate sending notification", { traceId, notificationId: notification.id });
+    this.logger.info(`📧 [${notification.type}] Sending to: ${notification.recipient}`, { traceId });
     if (notification.subject) {
-      this.logger.info(`   Subject: ${notification.subject}`);
+      this.logger.info(`Subject: ${notification.subject}`, { traceId });
     }
-    this.logger.info(`   Message: ${notification.message}`);
+    this.logger.info(`Message: ${notification.message}`, { traceId });
   }
 }

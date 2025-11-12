@@ -2,19 +2,19 @@ import { injectable, inject } from "inversify";
 import { IPaymentRepository } from "../repositories/PaymentRepository";
 import { Payment } from "../entities/Payment.entity";
 import { ILogger, TYPES } from "@observability/core";
-import { 
-  ProcessPaymentDto, 
-  PaymentStatus, 
+import {
+  ProcessPaymentDto,
+  PaymentStatus,
   PaymentError,
-  PaymentSimulator 
+  PaymentSimulator,
 } from "../utils/payment.utils";
 import { randomUUID } from "crypto";
 
 export interface IPaymentService {
-  processPayment(paymentDto: ProcessPaymentDto): Promise<Payment>;
-  getPaymentById(id: string): Promise<Payment | null>;
-  getPaymentByOrderId(orderId: string): Promise<Payment | null>;
-  getAllPayments(): Promise<Payment[]>;
+  processPayment(paymentDto: ProcessPaymentDto, traceId?: string): Promise<Payment>;
+  getPaymentById(id: string, traceId?: string): Promise<Payment | null>;
+  getPaymentByOrderId(orderId: string, traceId?: string): Promise<Payment | null>;
+  getAllPayments(traceId?: string): Promise<Payment[]>;
 }
 
 @injectable()
@@ -24,14 +24,11 @@ export class PaymentService implements IPaymentService {
     @inject(TYPES.Logger) private logger: ILogger
   ) {}
 
-  async processPayment(paymentDto: ProcessPaymentDto): Promise<Payment> {
+  async processPayment(paymentDto: ProcessPaymentDto, traceId?: string): Promise<Payment> {
     const startTime = Date.now();
     const transactionId = `TXN-${randomUUID()}`;
-
     try {
-      this.logger.info(`Processing payment for order: ${paymentDto.orderId}`);
-
-      // Create pending payment
+      this.logger.info("Processing payment", { traceId, transactionId, orderId: paymentDto.orderId, amount: paymentDto.amount });
       const payment = await this.paymentRepo.create({
         orderId: paymentDto.orderId,
         transactionId,
@@ -40,65 +37,45 @@ export class PaymentService implements IPaymentService {
         method: paymentDto.method,
         customerDetails: paymentDto.customerDetails,
         status: PaymentStatus.PROCESSING,
-        processingTimeMs: 0
+        processingTimeMs: 0,
       });
-
-      // Simulate payment processing delay
       const delay = PaymentSimulator.simulateProcessingDelay();
       await this.sleep(delay);
-
-      // Simulate random failures (20% failure rate)
       if (PaymentSimulator.shouldSimulateFailure()) {
-        return await this.handlePaymentFailure(payment.id, startTime);
+        return await this.handlePaymentFailure(payment.id, startTime, traceId);
       }
-
-      // Success case
       const processingTime = Date.now() - startTime;
-      const updatedPayment = await this.paymentRepo.updateStatus(
-        payment.id, 
-        PaymentStatus.SUCCESS
-      );
-
+      const updatedPayment = await this.paymentRepo.updateStatus(payment.id, PaymentStatus.SUCCESS);
       await this.updateProcessingTime(payment.id, processingTime);
-
-      this.logger.info(`Payment successful: ${transactionId}`, { 
-        processingTime,
-        orderId: paymentDto.orderId 
-      });
-
+      this.logger.info("Payment successful", { traceId, processingTime, transactionId, orderId: paymentDto.orderId });
       return updatedPayment!;
     } catch (error) {
-      this.logger.error(`Payment processing error: ${transactionId}`, error as Error);
+      this.logger.error("Payment processing error", error as Error, { traceId, transactionId, error: (error as Error).message, stack: (error as Error).stack });
       throw error;
     }
   }
 
-  async getPaymentById(id: string): Promise<Payment | null> {
+  async getPaymentById(id: string, traceId?: string): Promise<Payment | null> {
+    this.logger.info("Get payment by id", { traceId, id });
     return await this.paymentRepo.findById(id);
   }
 
-  async getPaymentByOrderId(orderId: string): Promise<Payment | null> {
+  async getPaymentByOrderId(orderId: string, traceId?: string): Promise<Payment | null> {
+    this.logger.info("Get payment by orderId", { traceId, orderId });
     return await this.paymentRepo.findByOrderId(orderId);
   }
 
-  async getAllPayments(): Promise<Payment[]> {
+  async getAllPayments(traceId?: string): Promise<Payment[]> {
+    this.logger.info("Get all payments", { traceId });
     return await this.paymentRepo.findAll();
   }
 
-  private async handlePaymentFailure(paymentId: string, startTime: number): Promise<Payment> {
+  private async handlePaymentFailure(paymentId: string, startTime: number, traceId?: string): Promise<Payment> {
     const failureReason = PaymentSimulator.getRandomFailureReason();
     const processingTime = Date.now() - startTime;
-
-    this.logger.warn(`Payment failed: ${paymentId}`, { reason: failureReason });
-
-    const payment = await this.paymentRepo.updateStatus(
-      paymentId, 
-      PaymentStatus.FAILED,
-      failureReason
-    );
-
+    this.logger.warn("Payment failed", { traceId, paymentId, reason: failureReason });
+    const payment = await this.paymentRepo.updateStatus(paymentId, PaymentStatus.FAILED, failureReason);
     await this.updateProcessingTime(paymentId, processingTime);
-
     throw new PaymentError(failureReason, "PAYMENT_FAILED");
   }
 
@@ -112,6 +89,6 @@ export class PaymentService implements IPaymentService {
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

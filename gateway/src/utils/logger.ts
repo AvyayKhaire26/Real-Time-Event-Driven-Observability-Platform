@@ -11,8 +11,18 @@ const logFormat = winston.format.combine(
 const consoleFormat = winston.format.combine(
   winston.format.colorize(),
   winston.format.timestamp({ format: "YYYY-MM-DD HH:mm:ss" }),
-  winston.format.printf(({ timestamp, level, message, service, ...meta }) => {
-    let msg = `[${timestamp}] [${level}] [${service || "gateway"}] ${message}`;
+  winston.format.printf(({ timestamp, level, message, service, traceId, ...meta }) => {
+    // Add traceId if present in meta (or top-level)
+    let traceIdStr = traceId
+      ? `[traceId=${traceId}] `
+      : (meta && meta.traceId ? `[traceId=${meta.traceId}] ` : '');
+    let msg = `[${timestamp}] [${level}] [${service || "gateway"}] ${traceIdStr}${message}`;
+
+    // Remove traceId from meta so it's not repeated
+    if (meta && meta.traceId) {
+      delete meta.traceId;
+    }
+
     if (Object.keys(meta).length > 0) {
       msg += ` ${JSON.stringify(meta)}`;
     }

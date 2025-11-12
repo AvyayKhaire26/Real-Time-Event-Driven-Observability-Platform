@@ -18,7 +18,6 @@ const app: Application = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(helmet());
-
 app.use(cors({
   origin: process.env.CORS_ORIGIN || "*",
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
@@ -39,6 +38,7 @@ const limiter = rateLimit({
 app.use(limiter);
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+
 app.use(requestLogger);
 
 // NOTE: Event publishing happens INSIDE proxy hooks (serviceProxy.ts)
@@ -78,17 +78,19 @@ const registry: ServiceRegistry = serviceRegistry;
 const serviceRouter = setupServiceRoutes(registry.services);
 app.use("/", serviceRouter);
 
-app.use((req, res) => {
+// 404 Handler with traceId propagation
+app.use((req: any, res: any) => {
   logger.warn("Route not found", {
     path: req.path,
     method: req.method,
-    ip: req.ip
+    ip: req.ip,
+    traceId: req.traceId // propagate traceId for unmatched route
   });
-
   res.status(404).json({
     success: false,
     message: "Route not found",
     path: req.path,
+    traceId: req.traceId, // return traceId to API clients
     availableRoutes: registry.services.map(s => `${s.prefix}`)
   });
 });
@@ -133,7 +135,6 @@ async function startServer() {
         logger.info("Server closed successfully");
         process.exit(0);
       });
-
       setTimeout(() => {
         logger.error("Forcing shutdown after timeout");
         process.exit(1);
@@ -142,20 +143,21 @@ async function startServer() {
 
     process.on("SIGTERM", gracefulShutdown);
     process.on("SIGINT", gracefulShutdown);
+
+    process.on("uncaughtException", (error) => {
+      logger.error("Uncaught Exception", { error: error.message, stack: error.stack });
+      process.exit(1);
+    });
+
+    process.on("unhandledRejection", (reason, promise) => {
+      logger.error("Unhandled Rejection", { reason, promise });
+      process.exit(1);
+    });
+
   } catch (error) {
     logger.error("Failed to start server", error as Error);
     process.exit(1);
   }
 }
-
-process.on("uncaughtException", (error) => {
-  logger.error("Uncaught Exception", { error: error.message, stack: error.stack });
-  process.exit(1);
-});
-
-process.on("unhandledRejection", (reason, promise) => {
-  logger.error("Unhandled Rejection", { reason, promise });
-  process.exit(1);
-});
 
 startServer();

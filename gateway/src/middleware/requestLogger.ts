@@ -12,11 +12,12 @@ export const requestLogger = (
   res: Response,
   next: NextFunction
 ) => {
-  // Generate unique trace ID using built-in crypto
-  req.traceId = randomUUID();
+  // Accept X-Trace-Id from upstream if present, otherwise generate new
+  const incomingTraceId = req.header("X-Trace-Id");
+  req.traceId = incomingTraceId ? incomingTraceId : randomUUID();
   req.startTime = Date.now();
 
-  // Log incoming request
+  // Log incoming request with traceId and essentials
   logger.info("Incoming request", {
     traceId: req.traceId,
     method: req.method,
@@ -26,11 +27,10 @@ export const requestLogger = (
     userAgent: req.get("user-agent")
   });
 
-  // Intercept response
+  // Intercept response to log outgoing with traceId
   const originalSend = res.send;
   res.send = function (data: any) {
     const responseTime = Date.now() - (req.startTime || Date.now());
-    
     logger.info("Outgoing response", {
       traceId: req.traceId,
       method: req.method,
@@ -38,9 +38,11 @@ export const requestLogger = (
       statusCode: res.statusCode,
       responseTime: `${responseTime}ms`
     });
-
     return originalSend.call(this, data);
   };
+
+  // Also make traceId available to downstream handlers
+  res.setHeader("X-Trace-Id", req.traceId);
 
   next();
 };

@@ -28,38 +28,38 @@ export class Event {
   timestamp!: Date;
 
   @Column({ type: "varchar", length: 10, nullable: true })
-  method!: string;
-
-  @Column({ type: "varchar", length: 255, nullable: true })  // ✅ NOW NULLABLE
-  path!: string;
-
-  @Column({ type: "int" })
-  @Index()
-  statusCode!: number;
-
-  @Column({ type: "int", nullable: true })
-  duration!: number;
-
-  @Column({ type: "int", nullable: true })
-  responseSize!: number;
-
-  @Column({ type: "varchar", length: 50, nullable: true })
-  clientIp!: string;
+  method!: string | null;
 
   @Column({ type: "varchar", length: 255, nullable: true })
-  userAgent!: string;
+  path!: string | null;
+
+  @Column({ type: "int", nullable: true })
+  @Index()
+  statusCode!: number | null;
+
+  @Column({ type: "int", nullable: true })
+  duration!: number | null;
+
+  @Column({ type: "int", nullable: true })
+  responseSize!: number | null;
+
+  @Column({ type: "varchar", length: 50, nullable: true })
+  clientIp!: string | null;
+
+  @Column({ type: "varchar", length: 255, nullable: true })
+  userAgent!: string | null;
 
   @Column({ type: "jsonb", nullable: true })
-  requestBody!: any;
+  requestBody!: object | null;
 
   @Column({ type: "jsonb", nullable: true })
-  responseBody!: any;
+  responseBody!: object | null;
 
-  @Column({ type: "text", nullable: true })
-  errorMessage!: string;
+  @Column({ type: "varchar", length: 255, nullable: true })
+  errorMessage!: string | null;
 
   @Column({ type: "jsonb", nullable: true })
-  errorDetails!: any;
+  errorDetails!: object | null;
 
   @CreateDateColumn()
   createdAt!: Date;

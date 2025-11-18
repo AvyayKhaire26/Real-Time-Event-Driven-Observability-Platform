@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import logger from "../utils/logger";
 import { RequestWithTracking } from "./requestLogger";
+import { EventPublisher } from "@observability/common";
 
 export const errorHandler = (
   err: Error,
@@ -15,6 +16,20 @@ export const errorHandler = (
     path: req.path,
     method: req.method
   });
+
+  // Optionally publish system error events
+  if ((req as any).eventPublisher) {
+    (req as any).eventPublisher.publishEvent(
+      "gateway.error",
+      {
+        path: req.path,
+        method: req.method,
+        error: err.message,
+        stack: err.stack,
+      },
+      req.traceId
+    );
+  }
 
   res.status(500).json({
     success: false,

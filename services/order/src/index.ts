@@ -5,6 +5,7 @@ import { container, dbConnection } from "./config/inversify.config";
 import { TYPES, ILogger, IHealthCheck } from "@observability/core";
 import { OrderController } from "./controllers/OrderController";
 import { createOrderRoutes } from "./routes/order.routes";
+import { EventPublisher, RabbitMQConnection } from "@observability/common";
 
 dotenv.config();
 
@@ -16,50 +17,56 @@ app.use(express.json());
 const logger = container.get<ILogger>(TYPES.Logger);
 const healthCheck = container.get<IHealthCheck>(TYPES.HealthCheck);
 const orderController = container.get<OrderController>("OrderController");
+const eventPublisher = container.get<EventPublisher>("EventPublisher");
+const rabbitMQConnection = container.get<RabbitMQConnection>("RabbitMQConnection");
 
-// Health check
-app.get("/health", async (req, res) => {
-  const health = await healthCheck.check();
-  res.json(health);
-});
-
-// Root endpoint
-app.get("/", (req, res) => {
-  logger.info("Root endpoint accessed");
-  res.json({ 
-    service: "Order Service", 
-    message: "Order Service is running",
-    version: "1.0.0",
-    endpoints: {
-      orders: "/api/orders",
-      health: "/health"
-    }
-  });
-});
-
-// Order routes
-app.use("/api/orders", createOrderRoutes(orderController));
-
-// Start server
 async function startServer() {
-  try {
-    await dbConnection.connect();
-    logger.info("Database connected successfully");
-    
-    app.listen(PORT, () => {
-      logger.info(`Order Service running on port ${PORT}`);
-    });
-  } catch (error) {
-    logger.error("Failed to start server", error as Error);
-    process.exit(1);
-  }
+    try {
+        await dbConnection.connect();
+        logger.info("Database connected successfully");
+
+        logger.info("Connecting to RabbitMQ...");
+        await rabbitMQConnection.connect();
+        logger.info("RabbitMQ connected successfully");
+        app.get("/health", async (req, res) => {
+            const health = await healthCheck.check();
+            res.json(health);
+        });
+
+        app.get("/", (req, res) => {
+            logger.info("Root endpoint accessed");
+            res.json({
+                service: "Order Service",
+                message: "Order Service is running",
+                version: "1.0.0",
+                endpoints: {
+                    orders: "/api/orders",
+                    health: "/health"
+                }
+            });
+        });
+
+        app.use("/api/orders", createOrderRoutes(orderController));
+
+        app.listen(PORT, () => {
+            logger.info(`Order Service running on port ${PORT}`);
+        });
+    } catch (error) {
+        logger.error("Failed to start server", error as Error);
+        process.exit(1);
+    }
 }
 
 // Graceful shutdown
 process.on("SIGTERM", async () => {
-  logger.info("SIGTERM received, shutting down gracefully");
-  await dbConnection.disconnect();
-  process.exit(0);
+    logger.info("SIGTERM received, shutting down gracefully");
+    try {
+        await dbConnection.disconnect();
+        await rabbitMQConnection.disconnect();
+    } catch (e) {
+        logger.error("Error during shutdown", e as Error);
+    }
+    process.exit(0);
 });
 
 startServer();

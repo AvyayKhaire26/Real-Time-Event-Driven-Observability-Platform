@@ -27,92 +27,85 @@ export class RabbitMQConnection {
     this.config = config;
   }
 
-  async connect(): Promise<void> {
+async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      amqp.connect(this.config.url, (err: any, conn: any) => {
-        if (err) {
-          this.logger.error("Failed to connect to RabbitMQ", err);
-          reject(err);
-          return;
-        }
-
-        this.connection = conn;
-
-        conn.createChannel((err: any, ch: any) => {
-          if (err) {
-            this.logger.error("Failed to create channel", err);
-            reject(err);
-            return;
-          }
-
-          this.channel = ch;
-          this.logger.info("Connected to RabbitMQ and channel created");
-
-          // Assert exchange
-          ch.assertExchange(
-            this.config.exchange.name,
-            this.config.exchange.type,
-            { durable: this.config.exchange.durable },
-            (err: any) => {
-              if (err) {
-                this.logger.error("Failed to assert exchange", err);
+        amqp.connect(this.config.url, (err: any, conn: any) => {
+            if (err) {
+                this.logger.error("Failed to connect to RabbitMQ", err);
                 reject(err);
                 return;
-              }
-              this.logger.info(`Exchange ${this.config.exchange.name} asserted`);
             }
-          );
-
-          // Assert queues and bind them
-          let queueCount = 0;
-          this.config.queues.forEach((queue) => {
-            ch.assertQueue(queue.name, { durable: queue.durable }, (err: any) => {
-              if (err) {
-                this.logger.error(`Failed to assert queue ${queue.name}`, err);
-                reject(err);
-                return;
-              }
-
-              ch.bindQueue(
-                queue.name,
-                this.config.exchange.name,
-                queue.routingKey,
-                {},
-                (err: any) => {
-                  if (err) {
-                    this.logger.error(`Failed to bind queue ${queue.name}`, err);
+            this.connection = conn;
+            conn.createChannel((err: any, ch: any) => {
+                if (err) {
+                    this.logger.error("Failed to create channel", err);
                     reject(err);
                     return;
-                  }
-
-                  this.logger.info(
-                    `Queue ${queue.name} bound to ${queue.routingKey}`
-                  );
-                  queueCount++;
-
-                  if (queueCount === this.config.queues.length) {
-                    this.isConnected = true;
-                    resolve();
-                  }
                 }
-              );
+                this.channel = ch;
+                this.logger.info("Connected to RabbitMQ and channel created");
+                ch.assertExchange(
+                    this.config.exchange.name,
+                    this.config.exchange.type,
+                    { durable: this.config.exchange.durable },
+                    (err: any) => {
+                        if (err) {
+                            this.logger.error("Failed to assert exchange", err);
+                            reject(err);
+                            return;
+                        }
+                        this.logger.info(`Exchange ${this.config.exchange.name} asserted`);
+                        // Handle NO QUEUES
+                        if (!this.config.queues || this.config.queues.length === 0) {
+                            this.isConnected = true;
+                            resolve();
+                            return;
+                        }
+                        // Assert queues & bind if present
+                        let queueCount = 0;
+                        this.config.queues.forEach((queue) => {
+                            ch.assertQueue(queue.name, { durable: queue.durable }, (err: any) => {
+                                if (err) {
+                                    this.logger.error(`Failed to assert queue ${queue.name}`, err);
+                                    reject(err);
+                                    return;
+                                }
+                                ch.bindQueue(
+                                    queue.name,
+                                    this.config.exchange.name,
+                                    queue.routingKey,
+                                    {},
+                                    (err: any) => {
+                                        if (err) {
+                                            this.logger.error(`Failed to bind queue ${queue.name}`, err);
+                                            reject(err);
+                                            return;
+                                        }
+                                        this.logger.info(`Queue ${queue.name} bound to ${queue.routingKey}`);
+                                        queueCount++;
+                                        if (queueCount === this.config.queues.length) {
+                                            this.isConnected = true;
+                                            resolve();
+                                        }
+                                    }
+                                );
+                            });
+                        });
+                    }
+                );
+                // Handle connection errors as in original implementation
+                conn.on("error", (err: any) => {
+                    this.logger.error("RabbitMQ connection error", err);
+                    this.isConnected = false;
+                });
+                conn.on("close", () => {
+                    this.logger.warn("RabbitMQ connection closed");
+                    this.isConnected = false;
+                });
             });
-          });
-
-          // Handle connection errors
-          conn.on("error", (err: any) => {
-            this.logger.error("RabbitMQ connection error", err);
-            this.isConnected = false;
-          });
-
-          conn.on("close", () => {
-            this.logger.warn("RabbitMQ connection closed");
-            this.isConnected = false;
-          });
         });
-      });
     });
-  }
+}
 
   async publish(routingKey: string, message: any): Promise<void> {
     return new Promise((resolve, reject) => {

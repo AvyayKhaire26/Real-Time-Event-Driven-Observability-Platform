@@ -2,6 +2,7 @@ import { Container } from "inversify";
 import "reflect-metadata";
 import { TYPES, ILogger, IHealthCheck } from "@observability/core";
 import { ConsoleLogger, BaseHealthCheck, DatabaseConnection, IDatabaseConnection } from "@observability/common";
+import { EventPublisher, RabbitMQConnection } from "@observability/common";
 import { DataSourceOptions } from "typeorm";
 import { Invoice } from "../entities/Invoice.entity";
 import { IInvoiceRepository, InvoiceRepository } from "../repositories/InvoiceRepository";
@@ -37,10 +38,20 @@ container.bind<IInvoiceRepository>("InvoiceRepository").toDynamicValue((context)
   return new InvoiceRepository(db);
 }).inSingletonScope();
 
-// Service
-container.bind<IInvoiceService>("InvoiceService").to(InvoiceService).inSingletonScope();
+// RabbitMQ/EventPublisher setup (copying pattern from payment-service)
+const rabbitMQConfig = {
+  url: process.env.RABBITMQ_URL || "amqp://guest:guest@localhost:5672",
+  exchange: { name: "observability.events", type: "topic", durable: true },
+  queues: []
+};
+const rabbitMQConnection = new RabbitMQConnection(logger, rabbitMQConfig);
+container.bind<RabbitMQConnection>("RabbitMQConnection").toConstantValue(rabbitMQConnection);
 
-// Controller
+const eventPublisher = new EventPublisher(logger, rabbitMQConnection, "print-service");
+container.bind<EventPublisher>("EventPublisher").toConstantValue(eventPublisher);
+
+// Service/Controller
+container.bind<IInvoiceService>("InvoiceService").to(InvoiceService).inSingletonScope();
 container.bind<InvoiceController>("InvoiceController").to(InvoiceController).inSingletonScope();
 
 export { container, dbConnection };

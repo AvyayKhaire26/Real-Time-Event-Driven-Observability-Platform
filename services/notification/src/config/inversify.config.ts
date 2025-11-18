@@ -2,6 +2,7 @@ import { Container } from "inversify";
 import "reflect-metadata";
 import { TYPES, ILogger, IHealthCheck } from "@observability/core";
 import { ConsoleLogger, BaseHealthCheck, DatabaseConnection, IDatabaseConnection } from "@observability/common";
+import { EventPublisher, RabbitMQConnection } from "@observability/common";
 import { DataSourceOptions } from "typeorm";
 import { Notification } from "../entities/Notification.entity";
 import { INotificationRepository, NotificationRepository } from "../repositories/NotificationRepository";
@@ -37,10 +38,20 @@ container.bind<INotificationRepository>("NotificationRepository").toDynamicValue
   return new NotificationRepository(db);
 }).inSingletonScope();
 
-// Service
-container.bind<INotificationService>("NotificationService").to(NotificationService).inSingletonScope();
+// RabbitMQ/EventPublisher
+const rabbitMQConfig = {
+  url: process.env.RABBITMQ_URL || "amqp://guest:guest@localhost:5672",
+  exchange: { name: "observability.events", type: "topic", durable: true },
+  queues: []
+};
+const rabbitMQConnection = new RabbitMQConnection(logger, rabbitMQConfig);
+container.bind<RabbitMQConnection>("RabbitMQConnection").toConstantValue(rabbitMQConnection);
 
-// Controller
+const eventPublisher = new EventPublisher(logger, rabbitMQConnection, "notification-service");
+container.bind<EventPublisher>("EventPublisher").toConstantValue(eventPublisher);
+
+// Service/Controller
+container.bind<INotificationService>("NotificationService").to(NotificationService).inSingletonScope();
 container.bind<NotificationController>("NotificationController").to(NotificationController).inSingletonScope();
 
 export { container, dbConnection };

@@ -1,117 +1,108 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Query
 import uvicorn
-import logging
-import schedule
-import time
-import threading
-from app.config.settings import settings
-from app.api.routes import router
-from app.services.database import db
-from app.services.rabbitmq import rabbitmq_publisher
-from app.services.ml_service import ml_service
+import os
+from contextlib import asynccontextmanager
+from typing import Optional
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(levelname)s] [ml-service] %(message)s'
-)
-logger = logging.getLogger(__name__)
+from app.utils.logger import get_logger
+from app.utils.data import to_dataframe
+from app.services.event_cache import EventCache
+from app.services.rabbitmq_consumer import RabbitMQConsumer
+from app.services.detection_service import DetectionService
 
-app = FastAPI(
-    title="ML Anomaly Detection Service",
-    description="Production-grade real-time anomaly detection with model persistence",
-    version="2.0.0"
-)
+logger = get_logger("ml-service")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+# In-memory cache fed by RabbitMQ
+event_cache = EventCache(max_size=1000)
+
+# Detection service that runs anomalies + RCA automatically on events
+detection_service = DetectionService(event_cache=event_cache, max_results=10000)
+
+# RabbitMQ consumer (stream -> cache -> detection)
+rabbitmq_consumer = RabbitMQConsumer(
+    event_cache=event_cache,
+    detection_service=detection_service,
 )
 
-app.include_router(router, prefix="/api")
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize connections and load saved models"""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
     logger.info("=" * 60)
-    logger.info("🚀 ML Anomaly Detection Service starting...")
+    logger.info("ML Anomaly Detection Service starting...")
     logger.info("=" * 60)
-    
-    try:
-        # 1. Connect to database
-        db.connect()
-        
-        # 2. Connect to RabbitMQ
-        rabbitmq_publisher.connect()
-        
-        # 3. Load saved models (if any)
-        ml_service.initialize()
-        
-        # 4. Run initial training with backfill
-        logger.info("🤖 Running initial model training with intelligent backfill...")
-        result = ml_service.train_all_services()
-        
-        if result['success']:
-            logger.info(f"✅ Training complete: {result['message']}")
-            if result.get('backfill_used'):
-                logger.info(f"📊 Backfill used for: {result['backfill_used']}")
-        else:
-            logger.warning(f"⚠️  {result['message']}")
-        
-        # 5. Schedule periodic tasks
-        schedule.every(settings.TRAINING_INTERVAL_MINUTES).minutes.do(
-            ml_service.train_all_services
-        )
-        
-        schedule.every(1).minutes.do(
-            ml_service.detect_anomalies
-        )
-        
-        # 6. Start scheduler in background
-        def run_scheduler():
-            while True:
-                schedule.run_pending()
-                time.sleep(30)
-        
-        scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-        scheduler_thread.start()
-        logger.info("✅ Background scheduler started")
-        
-        # 7. Print status
-        status = ml_service.get_service_status()
-        logger.info("=" * 60)
-        logger.info(f"📡 Port: {settings.PORT}")
-        logger.info(f"🌍 Environment: {settings.ENVIRONMENT}")
-        logger.info(f"🔄 Training interval: {settings.TRAINING_INTERVAL_MINUTES} minutes")
-        logger.info(f"📊 Contamination: {settings.CONTAMINATION}")
-        logger.info(f"🎯 Anomaly threshold: {settings.ANOMALY_THRESHOLD}")
-        logger.info("=" * 60)
-        logger.info(f"📈 Detection Status:")
-        logger.info(f"   ✓ ML-enabled services: {status['ml_enabled']}")
-        logger.info(f"   ✓ Statistical fallback: {status['statistical_fallback']}")
-        logger.info(f"   ✓ Total services: {status['total_services']}")
-        logger.info("=" * 60)
-        
-    except Exception as e:
-        logger.error(f"❌ Startup failed: {e}")
-        raise
+    rabbitmq_consumer.start_in_background()
+    logger.info("RabbitMQ consumer initialized (with detection service)")
+    yield
+    # Shutdown
+    rabbitmq_consumer.stop()
+    logger.info("ML service shut down")
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup connections"""
-    logger.info("Shutting down ML service...")
-    db.disconnect()
-    rabbitmq_publisher.disconnect()
-    logger.info("✅ Cleanup complete")
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/health")
+def health():
+    logger.info("Health endpoint hit")
+    return {
+        "status": "ml-service healthy!",
+        "version": "0.4.0",
+        "cache_size": event_cache.size(),
+        "rabbitmq_connected": rabbitmq_consumer.connection is not None,
+    }
+
+
+@app.get("/anomalies")
+def get_recent_anomalies(service: Optional[str] = Query(None)):
+    """
+    Return anomalies that were already detected automatically from the stream.
+    This does NOT trigger detection; it only reads from DetectionService.
+    """
+    logger.info(f"Fetching recent anomalies (service={service})")
+    detections = detection_service.get_recent(service=service)
+    df = to_dataframe(detections)  # kept for possible future use/logging
+    return {
+        "success": True,
+        "service": service,
+        "source": "realtime_stream",
+        "anomalies_detected": len(detections),
+        "details": detections,
+    }
+
+
+@app.get("/anomalies/by-trace")
+def get_anomalies_by_trace(trace_id: str = Query(...)):
+    """
+    Convenience endpoint to filter stored detections by trace_id.
+    """
+    logger.info(f"Fetching anomalies for trace_id={trace_id}")
+    all_detections = detection_service.get_recent()
+    filtered = [d for d in all_detections if d.get("trace_id") == trace_id]
+    return {
+        "success": True,
+        "trace_id": trace_id,
+        "anomalies_detected": len(filtered),
+        "details": filtered,
+    }
+
+
+@app.get("/cache/status")
+def cache_status():
+    return {
+        "success": True,
+        "cache_size": event_cache.size(),
+        "metrics_count": len(event_cache.get_metrics()),
+        "logs_count": len(event_cache.get_logs()),
+    }
+
 
 if __name__ == "__main__":
+    port = int(os.getenv("PORT", 8000))
+    reload_env = os.getenv("ENVIRONMENT", "development") == "development"
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=settings.PORT,
-        reload=settings.ENVIRONMENT == "development"
+        port=port,
+        reload=reload_env,
     )

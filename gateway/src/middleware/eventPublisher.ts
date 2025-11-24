@@ -36,14 +36,17 @@ export class GatewayEventPublisher {
 
           this.rabbitmq = conn;
           logger.info("Connected to RabbitMQ");
+
           conn.createChannel((err: any, ch: any) => {
             if (err) {
               logger.error("Failed to create channel", err);
               reject(err);
               return;
             }
+
             this.channel = ch;
             logger.info("RabbitMQ channel created");
+
             // 1. Assert exchange
             ch.assertExchange(
               this.config.exchange,
@@ -55,13 +58,19 @@ export class GatewayEventPublisher {
                   reject(err);
                   return;
                 }
+
                 logger.info(`Exchange ${this.config.exchange} asserted`);
+
                 // 2. Assert queues and bind them
                 const queues = [
                   { name: "logs-queue", routingKey: "logs.*" },
                   { name: "metrics-queue", routingKey: "metrics.*" },
-                  { name: "traces-queue", routingKey: "traces.*" }
+                  { name: "traces-queue", routingKey: "traces.*" },
+                  // NEW: ML service queues
+                  { name: "ml-logs-queue", routingKey: "logs.*" },
+                  { name: "ml-metrics-queue", routingKey: "metrics.*" }
                 ];
+
                 let queueCount = 0;
                 queues.forEach((queue) => {
                   ch.assertQueue(queue.name, { durable: true }, (err: any) => {
@@ -70,7 +79,9 @@ export class GatewayEventPublisher {
                       reject(err);
                       return;
                     }
+
                     logger.info(`Queue ${queue.name} created`);
+
                     ch.bindQueue(
                       queue.name,
                       this.config.exchange,
@@ -85,13 +96,15 @@ export class GatewayEventPublisher {
                           reject(err);
                           return;
                         }
+
                         logger.info(
                           `Queue ${queue.name} bound to ${queue.routingKey}`
                         );
                         queueCount++;
+
                         if (queueCount === queues.length) {
                           this.isConnected = true;
-                          logger.info("? All queues ready for event publishing");
+                          logger.info("✅ All queues ready for event publishing");
                           resolve();
                         }
                       }
@@ -118,11 +131,13 @@ export class GatewayEventPublisher {
       });
       return;
     }
+
     try {
       // Ensure traceId is always present in event payload
       if (!event.traceId && traceId) {
         event.traceId = traceId;
       }
+
       const payload = JSON.stringify(event);
       const published = this.channel.publish(
         this.config.exchange,
@@ -130,6 +145,7 @@ export class GatewayEventPublisher {
         Buffer.from(payload),
         { persistent: true }
       );
+
       if (published) {
         logger.info(`✅ Event published to ${routingKey}`, {
           eventType: event.eventType,
@@ -176,21 +192,26 @@ export function createEventPublishingMiddleware() {
       method: req.method,
       traceId: req.traceId
     });
+
     const startTime = Date.now();
     const originalSend = res.send.bind(res);
+
     res.send = function (data: any): Response {
       const duration = Date.now() - startTime;
       const publisher = getEventPublisher();
+
       logger.debug("Response being sent, attempting to publish events", {
         path: req.path,
         statusCode: res.statusCode,
         hasPublisher: !!publisher,
         publisherReady: publisher?.isReady()
       });
+
       if (publisher && publisher.isReady()) {
         // Determine target service from path
         const pathParts = req.path.split("/").filter(Boolean);
         const service = pathParts[0] || "unknown";
+
         // 1. Request/Response Event
         const requestEvent = {
           eventType: "request.completed",
@@ -205,6 +226,7 @@ export function createEventPublishingMiddleware() {
           clientIp: req.ip,
           userAgent: req.get("user-agent")
         };
+
         publisher.publishEvent("logs.request", requestEvent, req.traceId);
 
         // 2. Service Metrics Event
@@ -218,8 +240,9 @@ export function createEventPublishingMiddleware() {
             request_count: 1,
             error_count: res.statusCode >= 400 ? 1 : 0
           },
-          traceId: req.traceId // Ensure metrics event has traceId
+          traceId: req.traceId
         };
+
         publisher.publishEvent("metrics.service", metricsEvent, req.traceId);
 
         // 3. Error Event (if status >= 400)
@@ -235,6 +258,7 @@ export function createEventPublishingMiddleware() {
             errorMessage: "Error occurred",
             requestBody: req.body
           };
+
           publisher.publishEvent("logs.error", errorEvent, req.traceId);
         }
       } else {
@@ -243,8 +267,10 @@ export function createEventPublishingMiddleware() {
           traceId: req.traceId
         });
       }
+
       return originalSend(data);
     };
+
     next();
   };
 }

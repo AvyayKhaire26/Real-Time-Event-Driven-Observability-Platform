@@ -32,11 +32,11 @@ export class InvoiceService implements IInvoiceService {
     async generateInvoice(orderId: string, paymentId: string, traceId?: string): Promise<Invoice> {
         try {
             this.logger.info("Generating invoice", { traceId, orderId, paymentId });
-            const existingInvoice = await this.invoiceRepo.findByOrderId(orderId);
-            if (existingInvoice) {
-                this.logger.info("Invoice already exists", { traceId, id: existingInvoice.id });
-                return existingInvoice;
-            }
+            // const existingInvoice = await this.invoiceRepo.findByOrderId(orderId);
+            // if (existingInvoice) {
+            //     this.logger.info("Invoice already exists", { traceId, id: existingInvoice.id });
+            //     return existingInvoice;
+            // }
             const orderData = await this.fetchOrderDetails(orderId, traceId);
             const paymentData = await this.fetchPaymentDetails(paymentId, traceId);
             const invoiceData: InvoiceData = {

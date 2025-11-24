@@ -1,156 +1,116 @@
+import requests
 import numpy as np
-import pandas as pd
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
-from typing import Dict, List, Tuple, Any, Optional
-import logging
-from datetime import datetime
-from app.services.model_storage import model_storage
+from typing import List, Dict, Any, Optional
 
-logger = logging.getLogger(__name__)
+from app.config import METRIC_API_BASE, REQUEST_TIMEOUT
 
-class AnomalyDetector:
-    def __init__(self, contamination: float = 0.02):
-        self.contamination = contamination
-        self.models: Dict[str, IsolationForest] = {}
-        self.scalers: Dict[str, StandardScaler] = {}
-        self.feature_columns = [
-            'response_time_ms',
-            'status_code',
-            'error_count',
-            'response_size_bytes'
-        ]
-        self.last_training = {}
-        self.model_versions = {}
-        logger.info(f"Initialized AnomalyDetector with contamination={contamination}")
-    
-    def load_saved_models(self):
-        """Load all previously saved models at startup"""
-        logger.info("Loading saved models from disk...")
-        services = model_storage.list_services()
-        
-        if not services:
-            logger.info("No saved models found")
-            return
-        
-        for service in services:
-            result = model_storage.load_model(service)
-            if result:
-                model, scaler, meta = result
-                self.models[service] = model
-                self.scalers[service] = scaler
-                self.last_training[service] = meta['timestamp']
-                self.model_versions[service] = meta['version']
-                logger.info(f"✅ Loaded saved model for {service}: {meta['version']}")
-    
-    def prepare_features(self, metrics: List[Dict[str, Any]]) -> pd.DataFrame:
-        """Convert raw metrics to feature DataFrame"""
-        df = pd.DataFrame(metrics)
-        df['response_size_bytes'] = df['response_size_bytes'].fillna(0)
-        features = df[self.feature_columns].copy()
-        return features
-    
-    def train(self, service: str, metrics: List[Dict[str, Any]], save_model: bool = True) -> bool:
-        """
-        Train Isolation Forest model for a specific service
-        """
-        if len(metrics) < 10:
-            logger.warning(f"Not enough samples for {service}: {len(metrics)}")
-            return False
-        
-        try:
-            features = self.prepare_features(metrics)
-            
-            # Initialize scaler
-            scaler = StandardScaler()
-            scaled_features = scaler.fit_transform(features)
-            
-            # Train Isolation Forest
-            model = IsolationForest(
-                contamination=self.contamination,
-                random_state=42,
-                n_estimators=100,
-                max_samples=min(256, len(metrics)),
-                n_jobs=-1
-            )
-            model.fit(scaled_features)
-            
-            # Store in memory
-            self.models[service] = model
-            self.scalers[service] = scaler
-            self.last_training[service] = datetime.now().isoformat()
-            
-            # Persist to disk
-            if save_model:
-                version = model_storage.save_model(
-                    service, model, scaler, 
-                    len(metrics), self.feature_columns
-                )
-                self.model_versions[service] = version
-            
-            logger.info(f"✅ Trained model for {service} with {len(metrics)} samples")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to train model for {service}: {e}")
-            return False
-    
-    def predict(self, service: str, metrics: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Detect anomalies in metrics"""
-        if service not in self.models:
-            logger.warning(f"No trained model for {service}")
-            return []
-        
-        try:
-            features = self.prepare_features(metrics)
-            scaled_features = self.scalers[service].transform(features)
-            
-            # Predict
-            predictions = self.models[service].predict(scaled_features)
-            scores = self.models[service].decision_function(scaled_features)
-            
-            # Normalize scores
-            anomaly_scores = 1 - (scores - scores.min()) / (scores.max() - scores.min() + 1e-10)
-            
-            # Create alerts
-            anomalies = []
-            for idx, (prediction, score) in enumerate(zip(predictions, anomaly_scores)):
-                if prediction == -1:
-                    metric = metrics[idx]
-                    anomalies.append({
-                        'metric_id': metric['id'],
-                        'service': service,
-                        'trace_id': metric.get('trace_id'),
-                        'method': metric.get('method'),
-                        'path': metric.get('path'),
-                        'anomaly_score': float(score),
-                        'detection_method': 'isolation_forest',
-                        'model_version': self.model_versions.get(service, 'unknown'),
-                        'timestamp': metric['timestamp'].isoformat(),
-                        'details': {
-                            'response_time_ms': metric['response_time_ms'],
-                            'status_code': metric['status_code'],
-                            'error_count': metric['error_count'],
-                            'response_size_bytes': metric.get('response_size_bytes', 0)
+
+def fetch_metrics_batch(service: str, minutes: int = 60) -> List[Dict[str, Any]]:
+    url = f'{METRIC_API_BASE}/service/{service}?minutes={minutes}'
+    response = requests.get(url, timeout=REQUEST_TIMEOUT)
+    if response.status_code == 200 and response.json().get('success'):
+        return response.json()['data']  # Returns a list of metric dicts
+    return []
+
+
+def detect_zscore_anomalies_batch(
+    metrics: List[Dict[str, Any]],
+    metric_key: str = 'responseTimeMs',
+    threshold: float = 3.0
+) -> List[Dict[str, Any]]:
+    values = [m.get(metric_key) for m in metrics if m.get(metric_key) is not None]
+    if not values:
+        return []
+
+    mean = float(np.mean(values))
+    std = float(np.std(values))
+    if std == 0:
+        return []
+
+    anomalies: List[Dict[str, Any]] = []
+    for m in metrics:
+        val = m.get(metric_key)
+        if val is None:
+            continue
+
+        z = (val - mean) / std
+        if abs(z) > threshold:
+            anomalies.append(
+                {
+                    "metric_id": m.get("id"),
+                    "trace_id": m.get("traceId"),
+                    "service": m.get("service"),
+                    "path": m.get("path"),
+                    "method": m.get("method"),
+                    "timestamp": m.get("timestamp"),
+                    "anomaly_score": abs(float(z)),
+                    "signals": [
+                        {
+                            "feature": metric_key,
+                            "value": val,
+                            "z_score": float(z),
+                            "mean": mean,
+                            "std": std,
                         }
-                    })
-            
-            if anomalies:
-                logger.info(f"Detected {len(anomalies)} anomalies for {service}")
-            
-            return anomalies
-            
-        except Exception as e:
-            logger.error(f"Failed to predict anomalies for {service}: {e}")
-            return []
-    
-    def is_trained(self, service: str) -> bool:
-        """Check if model is trained for a service"""
-        return service in self.models
-    
-    def get_trained_services(self) -> List[str]:
-        """Get list of services with trained models"""
-        return list(self.models.keys())
+                    ],
+                    "metrics": {
+                        "response_time_ms": m.get("responseTimeMs"),
+                        "status_code": m.get("statusCode"),
+                        "error_count": m.get("errorCount"),
+                    },
+                }
+            )
+    return anomalies
 
-# Singleton instance
-detector = AnomalyDetector()
+
+def _flatten_metric_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Convert a metric.service event from RabbitMQ into the flat metric dict
+    expected by detect_zscore_anomalies_batch.
+    """
+    if event.get("eventType") != "metric.service":
+        return None
+
+    metrics = event.get("metrics") or {}
+    return {
+        "id": None,
+        "traceId": event.get("traceId"),
+        "service": event.get("service"),
+        "path": event.get("path"),
+        "method": event.get("method"),
+        "timestamp": event.get("timestamp"),
+        "responseTimeMs": metrics.get("response_time_ms"),
+        "statusCode": metrics.get("status_code"),
+        "errorCount": metrics.get("error_count"),
+        "responseSizeBytes": metrics.get("response_size_bytes"),
+    }
+
+
+def metrics_from_cache(event_cache, service: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Extract normalized metric records from the in-memory event cache.
+    """
+    metric_events = event_cache.get_metrics()
+    flat: List[Dict[str, Any]] = []
+
+    for e in metric_events:
+        if service and e.get("service") != service:
+            continue
+        m = _flatten_metric_event(e)
+        if m is not None:
+            flat.append(m)
+
+    return flat
+
+
+def detect_from_cache(
+    event_cache,
+    service: Optional[str] = None,
+    metric_key: str = "responseTimeMs",
+    threshold: float = 3.0,
+) -> List[Dict[str, Any]]:
+    """
+    Run z-score anomaly detection on metrics derived from the real-time cache.
+    """
+    metrics = metrics_from_cache(event_cache, service=service)
+    return detect_zscore_anomalies_batch(metrics, metric_key=metric_key, threshold=threshold)
